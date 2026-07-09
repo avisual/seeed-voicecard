@@ -356,8 +356,10 @@ static int simple_util_parse_dai(struct device_node *node,
 	 *    if he unbinded CPU or Codec.
 	 */
 	ret = snd_soc_of_get_dai_name(node, &dlc->dai_name, 0);
-	if (ret < 0)
+	if (ret < 0) {
+		of_node_put(args.np);
 		return ret;
+	}
 
 	dlc->of_node = args.np;
 
@@ -626,6 +628,7 @@ static int seeed_voice_card_dai_link_of(struct device_node *node,
 
 dai_link_of_err:
 	of_node_put(cpu);
+	of_node_put(plat);
 	of_node_put(codec);
 
 	return ret;
@@ -821,11 +824,17 @@ static int seeed_voice_card_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int num, ret, i;
 
-	/* Get the number of DAI links */
-	if (np && of_get_child_by_name(np, PREFIX "dai-link"))
-		num = of_get_child_count(np);
-	else
-		num = 1;
+	/* Get the number of DAI links (release the looked-up node) */
+	{
+		struct device_node *dl = np ? of_get_child_by_name(np, PREFIX "dai-link") : NULL;
+
+		if (dl) {
+			num = of_get_child_count(np);
+			of_node_put(dl);
+		} else {
+			num = 1;
+		}
+	}
 
 	/* Allocate the private data and the DAI link array */
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
