@@ -1258,7 +1258,13 @@ int ac101_trigger(struct snd_pcm_substream *substream, int cmd,
 	struct snd_soc_codec *codec = dai->codec;
 	struct ac10x_priv *ac10x = snd_soc_codec_get_drvdata(codec);
 	int ret = 0;
-	unsigned long flags;
+
+	/*
+	 * Assert process context: this runs sleeping regmap-I2C below. With the
+	 * machine dai_link marked nonatomic, .trigger runs in process context.
+	 * If a future change re-introduces atomic context, might_sleep() screams.
+	 */
+	might_sleep();
 
 	AC101_DBG("stream=%s  cmd=%d\n",
 		snd_pcm_stream_str(substream),
@@ -1269,7 +1275,13 @@ int ac101_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		#if _MASTER_MULTI_CODEC == _MASTER_AC101
-		spin_lock_irqsave(&ac10x->lock, flags);
+		/*
+		 * No spin_lock: these are sleeping regmap-I2C writes that MUST run in
+		 * process context. nonatomic .trigger is serialised by the PCM action
+		 * mutex; the old spin_lock_irqsave() only created an illegal
+		 * sleep-in-atomic window (an I2C xfer dwarfs any scheduling gap it
+		 * tried to close).
+		 */
 		if (ac10x->aif1_clken == 0){
 			/*
 			 * enable aif1clk, it' here due to reduce time between 'AC108 Sysclk Enable' and 'AC101 Sysclk Enable'
@@ -1279,7 +1291,6 @@ int ac101_trigger(struct snd_pcm_substream *substream, int cmd,
 			ret = ret || ac101_update_bits(codec, MOD_CLK_ENA, (0x1<<MOD_CLK_AIF1), (0x1<<MOD_CLK_AIF1));
 			ret = ret || ac101_update_bits(codec, MOD_RST_CTRL, (0x1<<MOD_RESET_AIF1), (0x1<<MOD_RESET_AIF1));
 		}
-		spin_unlock_irqrestore(&ac10x->lock, flags);
 		#endif
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:

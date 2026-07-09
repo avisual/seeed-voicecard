@@ -995,6 +995,13 @@ static int ac108_set_clock(int y_start_n_stop, struct snd_pcm_substream *substre
 	u8 reg;
 	int ret = 0;
 
+	/*
+	 * Runs sleeping regmap-I2C (and, on START, ac101_trigger's I2C). Must be
+	 * process context -- the machine .trigger is nonatomic. Assert it so any
+	 * regression back into atomic context is caught immediately.
+	 */
+	might_sleep();
+
 	dev_dbg(ac10x->codec->dev, "%s() L%d cmd:%d\n", __func__, __LINE__, y_start_n_stop);
 
 	/* spin_lock move to machine trigger */
@@ -1052,9 +1059,16 @@ static int ac108_trigger(struct snd_pcm_substream *substream, int cmd,
 {
 	struct snd_soc_codec *codec = dai->codec;
 	struct ac10x_priv *ac10x = snd_soc_codec_get_drvdata(codec);
-	unsigned long flags;
 	int ret = 0;
 	u8 r;
+
+	/*
+	 * Assert process context: the START case does sleeping regmap-I2C.
+	 * dai_link is nonatomic so this runs in process context; might_sleep()
+	 * turns any future atomic-context regression into a loud warning
+	 * instead of a silent sleep-in-atomic panic.
+	 */
+	might_sleep();
 
 	dev_dbg(dai->dev, "%s() stream=%s  cmd=%d\n",
 		__FUNCTION__,
@@ -1065,14 +1079,18 @@ static int ac108_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		spin_lock_irqsave(&ac10x->lock, flags);
+		/*
+		 * No spin_lock: ac10x_read()/ac108_multi_update_bits() are sleeping
+		 * I2C and MUST run in process context. nonatomic .trigger is serialised
+		 * by the PCM action mutex; the old spin_lock_irqsave() only created an
+		 * illegal sleep-in-atomic window.
+		 */
 		/* disable global clock if lrck disabled */
 		ac10x_read(I2S_CTRL, &r, ac10x->i2cmap[_MASTER_INDEX]);
 		if ((r & (0x01 << BCLK_IOEN)) && (r & (0x01 << LRCK_IOEN)) == 0) {
 			/* disable global clock */
 			ac108_multi_update_bits(I2S_CTRL, 0x1 << TXEN | 0x1 << GEN, 0x0 << TXEN | 0x0 << GEN, ac10x);
 		}
-		spin_unlock_irqrestore(&ac10x->lock, flags);
 
 		/* delayed clock starting, move to machine trigger() */
 		break;
