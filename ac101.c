@@ -751,6 +751,10 @@ static int snd_ac101_put_volsw(struct snd_kcontrol *kcontrol,
 	if (sign_bit)
 		mask = BIT(sign_bit + 1) - 1;
 
+	if (ucontrol->value.integer.value[0] < 0 ||
+	    ucontrol->value.integer.value[0] > mc->max)
+		return -EINVAL;
+
 	val = ((ucontrol->value.integer.value[0] + mc->min) & mask);
 	if (invert) {
 		val = mc->max - val;

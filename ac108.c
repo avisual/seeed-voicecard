@@ -219,6 +219,9 @@ static int snd_ac108_get_volsw(struct snd_kcontrol *kcontrol,
 	int ret, chip = mc->autodisable;
 	u8 val;
 
+	if (chip < 0 || chip >= ac10x->codec_cnt || !ac10x->i2cmap[chip])
+		return -EINVAL;
+
 	if ((ret = ac10x_read(mc->reg, &val, ac10x->i2cmap[chip])) < 0)
 		return ret;
 
@@ -249,6 +252,12 @@ static int snd_ac108_put_volsw(struct snd_kcontrol *kcontrol,
 	unsigned int val, mask = (1 << fls(mc->max)) - 1;
 	unsigned int invert = mc->invert;
 	int ret, chip = mc->autodisable;
+
+	if (chip < 0 || chip >= ac10x->codec_cnt || !ac10x->i2cmap[chip])
+		return -EINVAL;
+	if (ucontrol->value.integer.value[0] < 0 ||
+	    ucontrol->value.integer.value[0] > mc->max)
+		return -EINVAL;
 
 	if (sign_bit)
 		mask = BIT(sign_bit + 1) - 1;
