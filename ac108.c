@@ -1510,7 +1510,20 @@ __ret:
 		if (! ac10x->i2c101) {
 			memset(&ac108_dai[_MASTER_INDEX]->playback, '\0', sizeof ac108_dai[_MASTER_INDEX]->playback);
 		}
-		ret = snd_soc_register_codec(&ac10x->i2c[_MASTER_INDEX]->dev, &ac10x_soc_codec_driver,
+		/*
+		 * NON-devm registration to stay symmetric with the explicit
+		 * snd_soc_unregister_component() + kfree(ac10x) in ac108_i2c_remove().
+		 * The sound-compatible shim maps snd_soc_register_codec ->
+		 * devm_snd_soc_register_component; mixing that with the manual
+		 * unregister double-tears-down the codec and lets devm run codec
+		 * teardown (which dereferences the global ac10x) AFTER kfree(ac10x)
+		 * -> UAF on module unbind / shutdown. Match register to unregister.
+		 */
+		if (!ac10x->i2c[_MASTER_INDEX]) {
+			dev_err(&i2c->dev, "master AC108 (index %d) not probed; cannot register codec\n", _MASTER_INDEX);
+			return -ENODEV;
+		}
+		ret = snd_soc_register_component(&ac10x->i2c[_MASTER_INDEX]->dev, &ac10x_soc_codec_driver,
 						ac108_dai[_MASTER_INDEX], 1);
 		if (ret < 0) {
 			dev_err(&i2c->dev, "Failed to register ac10x codec: %d\n", ret);
