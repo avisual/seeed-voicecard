@@ -1546,11 +1546,15 @@ static ssize_t ac101_debug_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct ac10x_priv *ac10x = dev_get_drvdata(dev);
-	int val = 0, flag = 0;
+	u32 val = 0;
+	int flag = 0;
 	u16 value_w, value_r;
 	u8 reg, num, i=0;
 
-	val = simple_strtol(buf, NULL, 16);
+	if (!capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	if (kstrtou32(buf, 16, &val))
+		return -EINVAL;
 	flag = (val >> 24) & 0xF;
 	if (flag) {
 		reg = (val >> 16) & 0xFF;

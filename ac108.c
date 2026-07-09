@@ -1365,10 +1365,14 @@ static struct snd_soc_codec_driver ac10x_soc_codec_driver = {
 };
 
 static ssize_t ac108_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
-	int val = 0, flag = 0;
+	u32 val = 0;
+	int flag = 0;
 	u8 i = 0, reg, num, value_w, value_r[4];
 
-	val = simple_strtol(buf, NULL, 16);
+	if (!capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	if (kstrtou32(buf, 16, &val))
+		return -EINVAL;
 	flag = (val >> 16) & 0xF;
 
 	if (flag) {
@@ -1381,6 +1385,8 @@ static ssize_t ac108_store(struct device *dev, struct device_attribute *attr, co
 
 		reg = (val >> 8) & 0xFF;
 		num = val & 0xff;
+		if (num > 0x80)
+			num = 0x80;
 		printk("\nRead: start REG:0x%02x,count:0x%02x\n", reg, num);
 
 		for (k = 0; k < ac10x->codec_cnt; k++) {
