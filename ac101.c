@@ -1458,9 +1458,14 @@ int ac101_codec_probe(struct snd_soc_codec *codec)
 /* power down chip */
 int ac101_codec_remove(struct snd_soc_codec *codec)
 {
-	#ifdef CONFIG_AC101_SWITCH_DETECT
 	struct ac10x_priv *ac10x = snd_soc_codec_get_drvdata(codec);
 
+	/* teardown-ordering: stop the playback delayed work and the resume work
+	 * before the codec context is torn down (both dereference the codec). */
+	cancel_delayed_work_sync(&ac10x->dlywork);
+	cancel_work_sync(&ac10x->codec_resume);
+
+	#ifdef CONFIG_AC101_SWITCH_DETECT
 	if (ac10x->irq) {
 		devm_free_irq(codec->dev, ac10x->irq, ac10x);
 		ac10x->irq = 0;
@@ -1701,6 +1706,8 @@ void ac101_shutdown(struct i2c_client *i2c)
 
 int ac101_remove(struct i2c_client *i2c)
 {
+	/* drop the playback clock callback before the ac10x context is freed */
+	seeed_voice_card_register_set_clock(SNDRV_PCM_STREAM_PLAYBACK, NULL);
 	sysfs_remove_group(&i2c->dev.kobj, &audio_debug_attr_group);
 	return 0;
 }

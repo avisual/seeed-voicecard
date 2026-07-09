@@ -1554,6 +1554,9 @@ static void ac108_i2c_remove(struct i2c_client *i2c) {
 
 __ret:
 	if (!ac10x->i2c[0] && !ac10x->i2c[1] && !ac10x->i2c101) {
+		/* drop stale clock callbacks before freeing the context they deref */
+		seeed_voice_card_register_set_clock(SNDRV_PCM_STREAM_CAPTURE, NULL);
+		seeed_voice_card_register_set_clock(SNDRV_PCM_STREAM_PLAYBACK, NULL);
 		kfree(ac10x);
 		ac10x = NULL;
 	}

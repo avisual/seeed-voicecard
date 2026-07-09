@@ -184,9 +184,12 @@ err:
 static int (* _set_clock[_SET_CLOCK_CNT])(int y_start_n_stop, struct snd_pcm_substream *substream, int cmd, struct snd_soc_dai *dai);
 
 int seeed_voice_card_register_set_clock(int stream, int (*set_clock)(int, struct snd_pcm_substream *, int, struct snd_soc_dai *)) {
-	if (! _set_clock[stream]) {
-		_set_clock[stream] = set_clock;
-	}
+	if (stream < 0 || stream >= _SET_CLOCK_CNT)
+		return -EINVAL;
+	/* Unconditional: lets a re-probe refresh the pointer AND a remove clear it
+	 * (NULL). The old `if (!_set_clock[stream])` guard left a stale callback
+	 * after unbind -> NULL-deref when .trigger next fired. */
+	_set_clock[stream] = set_clock;
 	return 0;
 }
 EXPORT_SYMBOL(seeed_voice_card_register_set_clock);
