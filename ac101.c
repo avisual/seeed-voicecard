@@ -1625,7 +1625,7 @@ int ac10x_fill_regcache(struct device* dev, struct regmap* map) {
 	int v;
 
 	n = regmap_get_max_register(map);
-	for (i = 0; i < n; i++) {
+	for (i = 0; i <= n; i++) {	/* <= : include max_register in the cache */
 		regcache_cache_bypass(map, true);
 		r = regmap_read(map, i, &v);
 		if (r) {
