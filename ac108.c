@@ -472,7 +472,7 @@ static int ac108_multi_update_bits(u8 reg, u8 mask, u8 val, struct ac10x_priv *a
 }
 
 static unsigned int ac108_codec_read(struct snd_soc_codec *codec, unsigned int reg) {
-	unsigned char val_r;
+	unsigned char val_r = 0;	/* ac10x_read leaves this untouched on I2C error */
 	struct ac10x_priv *ac10x = dev_get_drvdata(codec->dev);
 	/*read one chip is fine*/
 	ac10x_read(reg, &val_r, ac10x->i2cmap[_MASTER_INDEX]);
