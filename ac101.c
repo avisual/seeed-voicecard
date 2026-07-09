@@ -433,7 +433,7 @@ _err_input_register_device:
 _err_input_allocate_device:
 
 	if (ac10x->irq) {
-		devm_free_irq(&i2c->dev, ac10x->irq, ac10x);
+		devm_free_irq(ac10x->codec->dev, ac10x->irq, ac10x);
 		ac10x->irq = 0;
 	}
 _err_irq:
