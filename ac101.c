@@ -1016,6 +1016,10 @@ static int ac101_set_pll(struct snd_soc_dai *codec_dai, int pll_id, int source,
 			break;
 		}
 	}
+	if (i >= ARRAY_SIZE(codec_pll_div)) {
+		pr_err("ac101: no PLL divider for in=%u out=%u\n", freq_in, freq_out);
+		return -EINVAL;
+	}
 	/* config pll m */
 	if (m  == 64) m = 0;
 	ac101_update_bits(codec, PLL_CTRL1, (0x3f<<PLL_POSTDIV_M), (m<<PLL_POSTDIV_M));
@@ -1074,6 +1078,10 @@ int ac101_hw_params(struct snd_pcm_substream *substream,
 			break;
 		}
 	}
+	if (i >= ARRAY_SIZE(codec_aif1_lrck)) {
+		dev_err(codec->dev, "ac101: no LRCK/BCLK ratio for %d\n", aif1_lrck_div);
+		return -EINVAL;
+	}
 	ac101_update_bits(codec, AIF_CLK_CTRL, (0x7<<AIF1_LRCK_DIV), codec_aif1_lrck[i].bit<<AIF1_LRCK_DIV);
 
 	/* set PLL output freq */
@@ -1090,12 +1098,20 @@ int ac101_hw_params(struct snd_pcm_substream *substream,
 			break;
 		}
 	}
+	if (i >= ARRAY_SIZE(codec_aif1_fs)) {
+		dev_err(codec->dev, "ac101: unsupported rate %d\n", params_rate(params));
+		return -EINVAL;
+	}
 
 	/* set I2S word size */
 	for (i = 0; i < ARRAY_SIZE(codec_aif1_wsize); i++) {
 		if (codec_aif1_wsize[i].val == aif1_word_size) {
 			break;
 		}
+	}
+	if (i >= ARRAY_SIZE(codec_aif1_wsize)) {
+		dev_err(codec->dev, "ac101: unsupported word size %d\n", aif1_word_size);
+		return -EINVAL;
 	}
 	ac101_update_bits(codec, AIF_CLK_CTRL, (0x3<<AIF1_WORK_SIZ), ((codec_aif1_wsize[i].bit)<<AIF1_WORK_SIZ));
 

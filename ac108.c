@@ -544,6 +544,11 @@ static int ac108_config_pll(struct ac10x_priv *ac10x, unsigned rate, unsigned lr
 				break;
 			}
 		}
+		if (i >= ARRAY_SIZE(ac108_pll_div_list)) {
+			dev_err(&ac10x->i2c[_MASTER_INDEX]->dev,
+				"AC108 no PLL divider for freq_in=%u rate=%u\n", pll_freq_in, rate);
+			return -EINVAL;
+		}
 		/* 0x11,0x12,0x13,0x14: Config PLL DIV param M1/M2/N/K1/K2 */
 		ac108_multi_update_bits(PLL_CTRL5, 0x1f << PLL_POSTDIV1 | 0x01 << PLL_POSTDIV2,
 						   ac108_pll_div.k1 << PLL_POSTDIV1 | ac108_pll_div.k2 << PLL_POSTDIV2, ac10x);
