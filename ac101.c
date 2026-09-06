@@ -72,6 +72,21 @@ static bool drc_used		= false;
 
 static struct ac10x_priv* static_ac10x;
 
+/*
+ * Pi 5 / PIO card: the AC101 DAC/HP/speaker path is normally powered up only
+ * by an ALSA PLAYBACK trigger on this (seeed) card.  On the Pi 5 the
+ * DesignWare I2S1 transmitter cannot drive the AC101's DSP_A bus, so playback
+ * data comes from the separate snd-pio-tdm card and this card only ever sees
+ * the 8-ch CAPTURE heartbeat.  With dac_always_on (default) the DAC path is
+ * powered up together with the codec clocks (ac101_set_clock, process context
+ * via the machine driver's work_codec_clk) and is never powered down.  The
+ * speaker-amp GPIO is then NOT raised automatically: it is owned by the
+ * "Speaker Amp Switch" kcontrol (default OFF) added in ac101_codec_probe().
+ */
+static bool dac_always_on = true;
+module_param(dac_always_on, bool, 0444);
+MODULE_PARM_DESC(dac_always_on, "Pi 5 / PIO card: power up the AC101 DAC path with the codec clocks and keep it on; speaker amp via 'Speaker Amp Switch' (default Y)");
+
 
 int ac101_read(struct snd_soc_codec *codec, unsigned reg) {
 	struct ac10x_priv *ac10x = snd_soc_codec_get_drvdata(codec);
@@ -897,11 +912,111 @@ static int ac101_aif_play(struct ac10x_priv* ac10x) {
 
 	/* Enable Left & Right Speaker */
 	ac101_update_bits(codec, SPKOUT_CTRL, (0x1 << LSPK_EN) | (0x1 << RSPK_EN), (0x1 << LSPK_EN) | (0x1 << RSPK_EN));
-	if (ac10x->gpiod_spk_amp_gate) {
+	/* Pi 5 / PIO card: with dac_always_on the amp is owned by the kcontrol */
+	if (ac10x->gpiod_spk_amp_gate && !dac_always_on) {
 		gpiod_set_value(ac10x->gpiod_spk_amp_gate, 1);
 	}
 	return 0;
 }
+
+/*
+ * Pi 5 / PIO card: DAC path power-up for dac_always_on -- the same register
+ * sequence as ac101_aif_play() (DAC digital clock/reset/enable, HP output +
+ * PA, DRC, speaker enable) but WITHOUT touching the speaker-amp GPIO.  Called
+ * from ac101_set_clock() on every codec clock start, in process context.
+ * Idempotent: late_enable_dac() keeps a use count so it is entered only when
+ * the path is actually down; the remaining writes are update_bits of bits
+ * that are already set.
+ *
+ * Everything SND_SOC_BIAS_OFF tears down on the output path is re-asserted
+ * here as well -- HPOUTPUTENABLE (via a forced PRE_PMD/POST_PMU edge, see
+ * below) AND the
+ * analog oscillator ADDA_TUNE3.OSCEN, which the original driver only ever
+ * re-set from probe/resume.  With dac_always_on the bias-OFF clears are also
+ * skipped in ac101_set_bias_level(), so this is belt and braces for any other
+ * path that leaves the oscillator down while every enable bit reads set.
+ */
+static int ac101_dac_power_up(struct ac10x_priv *ac10x)
+{
+	struct snd_soc_codec *codec = ac10x->codec;
+
+	might_sleep();
+
+	if (ac10x->dac_enable == 0) {
+		late_enable_dac(codec, SND_SOC_DAPM_PRE_PMU);
+		dev_info(codec->dev, "AC101 DAC path powered up (dac_always_on)\n");
+	}
+	/* analog oscillator / LDO leakage guard, as codec_resume_work() does */
+	ac101_update_bits(codec, ADDA_TUNE3, (0x1 << OSCEN), (0x1 << OSCEN));
+	/*
+	 * Force a REAL 0->1 edge on HP_DCRM_EN / HPOUTPUTENABLE (0x53[11:8]).
+	 * The chip's reset default for OMIXER_DACA_CTRL is 0x0f80 -- those bits
+	 * already read set after a fresh probe -- and regmap_update_bits() skips
+	 * the I2C write when nothing changes, so the plain POST_PMU "enable" is a
+	 * no-op on the wire and the DC-offset-removal block never arms: the HP PA
+	 * comes up against a dead output stage (every enable bit reads correct,
+	 * output sits exactly on the HPOUTPUTENABLE-off noise floor).  Measured
+	 * on a Pi 5 + 6-Mic HAT: writing 0x53 f080 then ff80 revives it.
+	 * PRE_PMD then POST_PMU is the driver's own datasheet-ordered sequence
+	 * (DCRM 0x0 before PA off; DCRM 0xf, 10 ms, then PA on), so the edge is
+	 * guaranteed whatever the cache believes.  Costs ~20 ms of HP mute at
+	 * codec clock start, when nothing is playing anyway.
+	 */
+	ac101_headphone_event(codec, SND_SOC_DAPM_PRE_PMD);
+	ac101_headphone_event(codec, SND_SOC_DAPM_POST_PMU);
+	if (drc_used) {
+		drc_enable(codec, 1);
+	}
+	/* Enable Left & Right Speaker (the amp GPIO stays under the kcontrol) */
+	ac101_update_bits(codec, SPKOUT_CTRL, (0x1 << LSPK_EN) | (0x1 << RSPK_EN), (0x1 << LSPK_EN) | (0x1 << RSPK_EN));
+
+	/*
+	 * DAC volume: ac101_codec_probe() writes DAC_VOL_CTRL = 0 (muted) and
+	 * the only in-driver unmute (ac101_aif_mute -> 0xA0A0) is bypassed with
+	 * dac_always_on, so without this the DAC stays silent until userspace
+	 * touches 'DAC volume' (an alsactl restore or an amixer call, which may
+	 * come seconds after the stream starts).  Apply the driver's own unmute
+	 * value ONCE, on the first power-up, and only if the register still reads
+	 * the probe mute -- a value userspace has since set is never overridden.
+	 */
+	if (!ac10x->dac_vol_init) {
+		ac10x->dac_vol_init = true;
+		if (ac101_read(codec, DAC_VOL_CTRL) == 0) {
+			ac101_write(codec, DAC_VOL_CTRL, 0xA0A0);
+			dev_info(codec->dev, "AC101 DAC volume default 0xA0A0 applied (dac_always_on)\n");
+		}
+	}
+	return 0;
+}
+
+/* Pi 5 / PIO card: "Speaker Amp Switch" -- explicit control of the speaker-amp
+ * enable GPIO (spk-amp-switch-gpios, GPIO17 on the 6-mic HAT).  Default OFF;
+ * with dac_always_on nothing else drives this line. */
+static int ac101_spk_amp_get(struct snd_kcontrol *kcontrol,
+			     struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = static_ac10x->spk_amp_on ? 1 : 0;
+	return 0;
+}
+
+static int ac101_spk_amp_put(struct snd_kcontrol *kcontrol,
+			     struct snd_ctl_elem_value *ucontrol)
+{
+	struct ac10x_priv *ac10x = static_ac10x;
+	bool on = !!ucontrol->value.integer.value[0];
+
+	if (on == ac10x->spk_amp_on)
+		return 0;
+	ac10x->spk_amp_on = on;
+	if (ac10x->gpiod_spk_amp_gate)
+		gpiod_set_value_cansleep(ac10x->gpiod_spk_amp_gate, on);
+	dev_info(ac10x->codec->dev, "Speaker Amp Switch -> %s\n", on ? "on" : "off");
+	return 1;
+}
+
+static const struct snd_kcontrol_new ac101_spk_amp_controls[] = {
+	SOC_SINGLE_BOOL_EXT("Speaker Amp Switch", 0, ac101_spk_amp_get, ac101_spk_amp_put),
+};
 
 static void ac10x_work_aif_play(struct work_struct *work) {
 	struct ac10x_priv *ac10x = container_of(work, struct ac10x_priv, dlywork.work);
@@ -916,6 +1031,14 @@ int ac101_aif_mute(struct snd_soc_dai *codec_dai, int mute)
 	struct ac10x_priv *ac10x = snd_soc_codec_get_drvdata(codec);
 
 	AC101_DBG("mute=%d\n",  mute);
+
+	/*
+	 * Pi 5 / PIO card: with dac_always_on the DAC path, its volume and the
+	 * amp GPIO are owned by ac101_set_clock()/userspace/the kcontrol; the
+	 * (unused) playback path on this card must not power any of it down.
+	 */
+	if (dac_always_on)
+		return 0;
 
 	ac101_write(codec, DAC_VOL_CTRL, mute? 0: 0xA0A0);
 
@@ -1263,10 +1386,19 @@ static int ac101_set_clock(int y_start_n_stop, struct snd_pcm_substream *substre
 	if (y_start_n_stop) {
 		/* enable global clock */
 		r = ac101_aif1clk(static_ac10x->codec, SND_SOC_DAPM_PRE_PMU, 1);
+		/*
+		 * Pi 5 / PIO card: the machine driver's work_codec_clk runs this
+		 * (process context) for BOTH registered streams on any START --
+		 * including the capture-only heartbeat -- so this is where the DAC
+		 * path gets powered up when no playback stream ever opens here.
+		 */
+		if (r == 0 && dac_always_on)
+			ac101_dac_power_up(static_ac10x);
 	} else {
 		/* disable global clock */
 		static_ac10x->aif1_clken = 1;
 		r = ac101_aif1clk(static_ac10x->codec, SND_SOC_DAPM_POST_PMD, 0);
+		/* Pi 5 / PIO card: dac_always_on -> DAC path deliberately left up */
 	}
 	return r;
 }
@@ -1415,8 +1547,16 @@ int ac101_set_bias_level(struct snd_soc_codec *codec, enum snd_soc_bias_level le
 		ac101_update_bits(codec, ADC_APC_CTRL, (0x1<<HBIASEN), (0<<HBIASEN));
 		ac101_update_bits(codec, ADC_APC_CTRL, (0x1<<HBIASADCEN), (0<<HBIASADCEN));
 		#endif
-		ac101_update_bits(codec, OMIXER_DACA_CTRL, (0xf<<HPOUTPUTENABLE), (0<<HPOUTPUTENABLE));
-		ac101_update_bits(codec, ADDA_TUNE3, (0x1<<OSCEN), (0<<OSCEN));
+		/*
+		 * Pi 5 / PIO card: with dac_always_on the DAC/HP path is owned by
+		 * ac101_set_clock() and is never powered down -- leave the HP output
+		 * enable and the analog oscillator alone here.  (The headset-mic
+		 * bias above is unrelated to the output path and is still dropped.)
+		 */
+		if (!dac_always_on) {
+			ac101_update_bits(codec, OMIXER_DACA_CTRL, (0xf<<HPOUTPUTENABLE), (0<<HPOUTPUTENABLE));
+			ac101_update_bits(codec, ADDA_TUNE3, (0x1<<OSCEN), (0<<OSCEN));
+		}
 		AC101_DBG("SND_SOC_BIAS_OFF\n");
 		break;
 	}
@@ -1464,6 +1604,16 @@ int ac101_codec_probe(struct snd_soc_codec *codec)
 		pr_err("[ac10x] Failed to register audio mode control, "
 				"will continue without it.\n");
 	}
+
+	/* Pi 5 / PIO card: explicit speaker-amp switch, default OFF */
+	ac10x->spk_amp_on = false;
+	ac10x->dac_vol_init = false;
+	ret = snd_soc_add_codec_controls(codec, ac101_spk_amp_controls, ARRAY_SIZE(ac101_spk_amp_controls));
+	if (ret) {
+		pr_err("[ac10x] Failed to register 'Speaker Amp Switch': %d\n", ret);
+	}
+	dev_info(codec->dev, "AC101 dac_always_on=%d, speaker amp %s\n",
+		 dac_always_on, ac10x->gpiod_spk_amp_gate ? "under 'Speaker Amp Switch' (off)" : "GPIO absent");
 
 	#ifdef CONFIG_AC101_SWITCH_DETECT
 	ret = ac101_switch_probe(ac10x);
@@ -1730,6 +1880,13 @@ void ac101_shutdown(struct i2c_client *i2c)
 
 int ac101_remove(struct i2c_client *i2c)
 {
+	struct ac10x_priv *ac10x = i2c_get_clientdata(i2c);
+
+	/* Pi 5 / PIO card: never leave the speaker amp enabled across an unbind */
+	if (ac10x && ac10x->gpiod_spk_amp_gate) {
+		gpiod_set_value_cansleep(ac10x->gpiod_spk_amp_gate, 0);
+		ac10x->spk_amp_on = false;
+	}
 	/* drop the playback clock callback before the ac10x context is freed */
 	seeed_voice_card_register_set_clock(SNDRV_PCM_STREAM_PLAYBACK, NULL);
 	sysfs_remove_group(&i2c->dev.kobj, &audio_debug_attr_group);

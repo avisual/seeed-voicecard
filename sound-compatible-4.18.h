@@ -43,5 +43,17 @@
 #define snd_soc_add_codec_controls snd_soc_add_component_controls
 #endif
 
+/*
+ * v6.16+ dropped the SND_SOC_DAIFMT_CB{M,S}_CF{M,S} spellings; the
+ * provider/consumer names (same values) exist since v5.14.
+ */
+#include <sound/soc-dai.h>
+#ifndef SND_SOC_DAIFMT_CBM_CFM
+#define SND_SOC_DAIFMT_CBM_CFM     SND_SOC_DAIFMT_CBP_CFP
+#endif
+#ifndef SND_SOC_DAIFMT_CBS_CFS
+#define SND_SOC_DAIFMT_CBS_CFS     SND_SOC_DAIFMT_CBC_CFC
+#endif
+
 #endif//__SOUND_COMPATIBLE_4_18_H__
 

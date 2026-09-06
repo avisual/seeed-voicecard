@@ -96,6 +96,13 @@ struct seeed_card_info {
 #define seeed_priv_to_link(priv, i) ((priv)->snd_card.dai_link + (i))
 #define seeed_priv_to_props(priv, i) ((priv)->dai_props + (i))
 
+/* v6.13+ renamed snd_soc_pcm_runtime.num -> .id (same 0-based link index) */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,13,0)
+#define seeed_rtd_num(rtd)	((rtd)->id)
+#else
+#define seeed_rtd_num(rtd)	((rtd)->num)
+#endif
+
 #define DAI	"sound-dai"
 #define CELL	"#sound-dai-cells"
 #define PREFIX	"seeed-voice-card,"
@@ -110,7 +117,7 @@ static int seeed_voice_card_startup(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct seeed_card_data *priv =	snd_soc_card_get_drvdata(rtd->card);
 	struct seeed_dai_props *dai_props =
-		seeed_priv_to_props(priv, rtd->num);
+		seeed_priv_to_props(priv, seeed_rtd_num(rtd));
 	int ret;
 
 	ret = clk_prepare_enable(dai_props->cpu_dai.clk);
@@ -151,7 +158,7 @@ static void seeed_voice_card_shutdown(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct seeed_card_data *priv =	snd_soc_card_get_drvdata(rtd->card);
 	struct seeed_dai_props *dai_props =
-		seeed_priv_to_props(priv, rtd->num);
+		seeed_priv_to_props(priv, seeed_rtd_num(rtd));
 
 	/* Restore the CPU-DAI channel range when the last open goes away
 	 * (locked + refcounted mirror of the startup override). */
@@ -177,7 +184,7 @@ static int seeed_voice_card_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct seeed_card_data *priv = snd_soc_card_get_drvdata(rtd->card);
 	struct seeed_dai_props *dai_props =
-		seeed_priv_to_props(priv, rtd->num);
+		seeed_priv_to_props(priv, seeed_rtd_num(rtd));
 	unsigned int mclk, mclk_fs = 0;
 	int ret = 0;
 
@@ -461,7 +468,7 @@ static int seeed_voice_card_dai_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_dai *codec = snd_soc_rtd_to_codec(rtd, 0);
 	struct snd_soc_dai *cpu = snd_soc_rtd_to_cpu(rtd, 0);
 	struct seeed_dai_props *dai_props =
-		seeed_priv_to_props(priv, rtd->num);
+		seeed_priv_to_props(priv, seeed_rtd_num(rtd));
 	int ret;
 
 	ret = simple_util_init_dai(codec, &dai_props->codec_dai);
@@ -479,6 +486,56 @@ static int seeed_voice_card_dai_init(struct snd_soc_pcm_runtime *rtd)
 #endif
 
 	dev_dbg(rtd->card->dev, "codec \"%s\" mapping to cpu \"%s\"\n", codec->name, cpu->name);
+	return 0;
+}
+
+/*
+ * Local copies of simple_util_set_dailink_name() / simple_util_parse_card_name():
+ * since v6.14 those take a struct simple_util_priv *, which this card does not
+ * embed.  Bodies mirror sound/soc/generic/simple-card-utils.c.
+ */
+static __printf(3, 4) int seeed_set_dailink_name(struct device *dev,
+						 struct snd_soc_dai_link *dai_link,
+						 const char *fmt, ...)
+{
+	va_list ap;
+	char *name = NULL;
+	int ret = -ENOMEM;
+
+	va_start(ap, fmt);
+	name = devm_kvasprintf(dev, GFP_KERNEL, fmt, ap);
+	va_end(ap);
+
+	if (name) {
+		ret = 0;
+		dai_link->name		= name;
+		dai_link->stream_name	= name;
+	}
+
+	return ret;
+}
+
+static int seeed_parse_card_name(struct snd_soc_card *card, char *prefix)
+{
+	int ret;
+
+	if (!prefix)
+		prefix = "";
+
+	/* Parse the card name from DT */
+	ret = snd_soc_of_parse_card_name(card, "label");
+	if (ret < 0 || !card->name) {
+		char prop[128];
+
+		snprintf(prop, sizeof(prop), "%sname", prefix);
+		ret = snd_soc_of_parse_card_name(card, prop);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (!card->name && card->dai_link)
+		card->name = card->dai_link->name;
+
 	return 0;
 }
 
@@ -586,7 +643,7 @@ static int seeed_voice_card_dai_link_of(struct device_node *node,
 	if (ret < 0)
 		goto dai_link_of_err;
 
-	ret = simple_util_set_dailink_name(dev, dai_link,
+	ret = seeed_set_dailink_name(dev, dai_link,
 						"%s-%s",
 						dai_link->cpus->dai_name,
 						#if _SINGLE_CODEC
@@ -717,7 +774,7 @@ static int seeed_voice_card_parse_of(struct device_node *node,
 			goto card_parse_end;
 	}
 
-	ret = simple_util_parse_card_name(&priv->snd_card, PREFIX);
+	ret = seeed_parse_card_name(&priv->snd_card, PREFIX);
 	if (ret < 0)
 		goto card_parse_end;
 

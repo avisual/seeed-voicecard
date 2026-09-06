@@ -77,6 +77,8 @@ struct ac10x_priv {
 
 	struct work_struct codec_resume;
 	struct gpio_desc* gpiod_spk_amp_gate;
+	bool spk_amp_on;	/* Pi 5 / PIO card: "Speaker Amp Switch" state */
+	bool dac_vol_init;	/* Pi 5 / PIO card: DAC volume default applied once */
 
 	#ifdef CONFIG_AC101_SWITCH_DETECT
 	struct gpio_desc* gpiod_irq;
@@ -122,5 +124,27 @@ int ac101_remove(struct i2c_client *i2c);
 int seeed_voice_card_register_set_clock(int stream, int (*set_clock)(int, struct snd_pcm_substream *, int, struct snd_soc_dai *));
 
 int ac10x_fill_regcache(struct device* dev, struct regmap* map);
+
+/*
+ * Pi 5 build: declarations only, so the kernel's default -Wmissing-prototypes
+ * (on by default since 6.x) build of this out-of-tree module is warning-free.
+ * No behaviour change; the definitions are unchanged in ac101.c / ac108.c.
+ */
+int ac10x_read(u8 reg, u8* rt_val, struct regmap* i2cm);
+int ac10x_write(u8 reg, u8 val, struct regmap* i2cm);
+int ac10x_update_bits(u8 reg, u8 mask, u8 val, struct regmap* i2cm);
+int ac108_audio_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai);
+void ac108_aif_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *dai);
+int ac108_aif_mute(struct snd_soc_dai *dai, int mute, int direction);
+int ac108_codec_remove(struct snd_soc_codec *codec);
+void ac108_codec_remove_void(struct snd_soc_codec *codec);
+int ac108_codec_suspend(struct snd_soc_codec *codec);
+int ac108_codec_resume(struct snd_soc_codec *codec);
+int ac101_read(struct snd_soc_codec *codec, unsigned reg);
+int ac101_write(struct snd_soc_codec *codec, unsigned reg, unsigned val);
+int ac101_update_bits(struct snd_soc_codec *codec, unsigned reg, unsigned mask, unsigned value);
+void drc_config(struct snd_soc_codec *codec);
+void drc_enable(struct snd_soc_codec *codec, bool on);
+void set_configuration(struct snd_soc_codec *codec);
 
 #endif//__AC10X_H__

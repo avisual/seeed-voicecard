@@ -281,7 +281,16 @@ static int snd_ac108_put_volsw(struct snd_kcontrol *kcontrol,
 	.tlv.p = (tlv_array), \
 	.info = snd_soc_info_volsw, .get = snd_ac108_get_volsw,\
 	.put = snd_ac108_put_volsw, \
-	.private_value = SOC_SINGLE_VALUE(reg, shift, max, invert, chip) }
+	.private_value = SOC_AC108_SINGLE_VALUE(reg, shift, max, invert, chip) }
+
+/* v6.16+ SOC_SINGLE_VALUE() takes (reg, shift, min, max, invert, autodisable) */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,16,0)
+#define SOC_AC108_SINGLE_VALUE(reg, shift, max, invert, chip) \
+	SOC_SINGLE_VALUE(reg, shift, 0, max, invert, chip)
+#else
+#define SOC_AC108_SINGLE_VALUE(reg, shift, max, invert, chip) \
+	SOC_SINGLE_VALUE(reg, shift, max, invert, chip)
+#endif
 
 /* single ac108 */
 static const struct snd_kcontrol_new ac108_snd_controls[] = {
