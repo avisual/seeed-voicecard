@@ -937,8 +937,10 @@ static int pio_tdm_setup_dma(struct pio_tdm *tdm, struct pio_tdm_stream *s)
 	return 0;
 }
 
-/* Software-only init, done for BOTH streams before any hardware setup so the
- * probe error path can release either stream unconditionally. */
+/*
+ * Software-only init, done for BOTH streams before any hardware setup so the
+ * probe error path can release either stream unconditionally.
+ */
 static void pio_tdm_init_stream(struct pio_tdm *tdm, struct pio_tdm_stream *s, bool is_tx)
 {
 	s->tdm = tdm;

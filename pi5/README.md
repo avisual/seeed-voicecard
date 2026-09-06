@@ -196,3 +196,13 @@ counts). `*_restarts` = state machine re-initialised by `.prepare` after a fault
 * `rx_dreq` / `tx_dreq` — the DMACTRL DREQ threshold, default 8 with joined 16-deep FIFOs. The
   kernel defaults were measured to duplicate or drop words.
 * `bus_probe` — set to 0 to disable the `-EIO` bus-alive gate in `.prepare`.
+
+## Static checks
+
+Built with `make C=1 CF="-Wsparse-all"` against 6.18.34: **0 sparse warnings**. `checkpatch.pl --file`
+(rpi-6.18.y): 0 errors of substance — the two remaining notes are the usual false positives for
+sysfs attribute-declaration macros (`PIO_TDM_STREAM_ATTRS` declares attributes, so it cannot be a
+`do { } while (0)`; `PIO_TDM_STREAM_ATTR_LIST` is an initialiser list, so it cannot be parenthesised).
+Not fuzzed and not formally audited: it is a kernel module, so treat bugs as a local crash risk. It
+takes no untrusted input — its only interfaces are standard ALSA calls, root-only module parameters
+and read-only sysfs counters.
