@@ -1,0 +1,118 @@
+/dts-v1/;
+/plugin/;
+/*
+ * ReSpeaker 6-Mic HAT on Raspberry Pi 5 (RP1).
+ *  - fragment@0/2/3/4: the seeed-voicecard control plane (codecs on i2c1, GPCLK0 24 MHz MCLK,
+ *    DesignWare I2S1 as the CPU DAI whose 8-ch capture stream is the codec-clock heartbeat).
+ *  - fragment@5: snd-pio-tdm - the actual audio path on RP1 PIO (8-ch S32 RX from GPIO20,
+ *    2-ch S32 TX on GPIO21).  I2S1 keeps GPIO18/19/20 (BCLK/WS/SDI, PIO reads the pads);
+ *    GPIO21 (SDO) is muxed to the "pio" function for the TX state machine.
+ * Compile (both include dirs; install-pi5.sh does this for you):
+ *   cpp -nostdinc -I /usr/src/linux-headers-$(uname -r)/include \
+ *       -I /usr/src/linux-headers-6.18.34+rpt-common-rpi/include -undef -x assembler-with-cpp \
+ *       seeed-8mic-pi5-overlay.dts | dtc -@ -H epapr -O dtb -o seeed-8mic-pi5.dtbo -
+ */
+#include <dt-bindings/clock/rp1.h>
+#include <dt-bindings/mfd/rp1.h>
+/ {
+    compatible = "brcm,bcm2712";
+    fragment@0 {  /* CPU DAI = DesignWare I2S1 (clock consumer). Pins trimmed to 18-20: GPIO21 goes to PIO. */
+        target = <&i2s_clk_consumer>;
+        __overlay__ { #sound-dai-cells = <0>; pinctrl-names = "default";
+                      pinctrl-0 = <&rp1_i2s1_18_20>;
+                      /* TRIED AND REJECTED 2026-09-05 -- dwc-i2s "PIO" (interrupt-driven FIFO) mode.
+                         Adding   interrupts = <15 4>;   (RP1_INT_I2S1 = 15, IRQ_TYPE_LEVEL_HIGH = 4)
+                         makes dw_i2s_probe take the platform_get_irq_optional() branch, so
+                         dev->use_pio = true, i2s_enable_dma() is skipped and the IRQ handler moves
+                         the FIFOs.  rp1.dtsi carries exactly this line commented out with the note
+                         "Providing an interrupt disables DMA".
+                         MEASURED: it probes correctly -- IRQ 15 shows up in
+                         /proc/interrupts as "1f000a4000.i2s" and dma2chan4/dma2chan5 are no longer
+                         claimed -- but the PIO PCM is sound/soc/dwc/dwc-pcm.c, whose dw_pcm_hardware
+                         is channels_min = channels_max = 2.  So BOTH  aplay -c 8  and  arecord -c 8
+                         fail at hw_params with "designware-i2s: invalid channels number" (-EINVAL)
+                         and the card is unusable.  It also cannot answer the TX-DREQ question,
+                         because it bypasses the DMAC entirely.  LEFT DISABLED:
+                              interrupts = <15 4>;
+                         (Root cause of the playback failure is elsewhere -- see pi5/README.md:
+                          the DesignWare TRANSMITTER does not shift at all in consumer mode
+                          against the AC101 DSP_A frame; the DMA/DREQ is fine.) */
+                      status = "okay"; };
+    };
+    fragment@2 {  /* AC101 GPIOs + GPCLK0 pinmux, RP1 syntax. If "gpio" function is rejected,
+                     delete spk_amp_pins — devm_gpiod_get muxes the pins itself. */
+        target = <&rp1_gpio>;
+        __overlay__ {
+            spk_amp_pins: spk_amp_pins {
+                pin_amp { function = "gpio"; pins = "gpio17"; bias-disable; };
+                pin_irq { function = "gpio"; pins = "gpio22"; bias-disable; };
+            };
+            gpclk0_pin: gpclk0_pin { function = "gpclk0"; pins = "gpio4"; bias-disable; };
+            /* I2S1 without SDO: the base dtb's rp1_i2s1_18_21 would claim GPIO21 (pinctrl-rp1 is strict). */
+            rp1_i2s1_18_20: rp1_i2s1_18_20 { function = "i2s1"; pins = "gpio18", "gpio19", "gpio20"; bias-disable; };
+            /* SDO for the PIO TX state machine (RP1 pinctrl function "pio" = funcsel a7). */
+            pio_sdo_pin: pio_sdo_pin { function = "pio"; pins = "gpio21"; bias-disable; };
+        };
+    };
+    fragment@3 {  /* All three codecs — ONE component; won't register otherwise (ac108.c:1524-1547) */
+        target = <&i2c1>;
+        __overlay__ {
+            #address-cells = <1>; #size-cells = <0>; status = "okay";
+            ac101: ac101@1a { compatible = "x-power,ac101"; pinctrl-names = "default";
+                pinctrl-0 = <&spk_amp_pins &gpclk0_pin>;
+                spk-amp-switch-gpios = <&rp1_gpio 17 0>; switch-irq-gpios = <&rp1_gpio 22 0>;
+                /* MCLK: set GPCLK0 to 24 MHz when the AC101 probes (the pinctrl above muxes GPIO4 at the same
+                   moment). NOT via &clksrc_gp0: that fixed-factor node never becomes a device on 6.18 (its
+                   supplier rp1_clocks is behind PCIe and isn't up when /clocks populates at 0.55 s). */
+                assigned-clocks = <&rp1_clocks RP1_CLK_GP0>;
+                assigned-clock-rates = <24000000>;
+                reg = <0x1a>; #sound-dai-cells = <0>; };
+            ac108_a: ac108@35 { compatible = "x-power,ac108_0"; reg = <0x35>;
+                #sound-dai-cells = <0>; data-protocol = <0>; tdm-chips-count = <2>; };
+            ac108_b: ac108@3b { compatible = "x-power,ac108_1"; reg = <0x3b>;
+                #sound-dai-cells = <0>; data-protocol = <0>; tdm-chips-count = <2>; };
+        };
+    };
+    fragment@4 {  /* Machine driver = the fixed seeed-voicecard. &sound stub EXISTS on Pi 5 (verified) */
+        target = <&sound>;
+        sound_overlay: __overlay__ {
+                compatible = "seeed-voicecard";
+                seeed-voice-card,name = "seeed8micvoicec";
+                seeed-voice-card,channels-playback-override = <8>;  /* Phase 2 H1: → <2> */
+                seeed-voice-card,channels-capture-override  = <8>;
+                #address-cells = <1>; #size-cells = <0>; status = "okay";
+                seeed-voice-card,dai-link@0 {
+                    format = "dsp_a"; bitclock-master = <&codec0_dai>; frame-master = <&codec0_dai>;
+                    reg = <0>;
+                    cpu { sound-dai = <&i2s_clk_consumer>;
+                          dai-tdm-slot-num = <2>;      /* Phase 2 H1: → <8> */
+                          dai-tdm-slot-width = <32>;
+                          dai-tdm-slot-tx-mask = <1 1 0 0>; dai-tdm-slot-rx-mask = <1 1 0 0>; };
+                    codec0_dai: codec { sound-dai = <&ac108_a>;
+                          clocks = <&rp1_clocks RP1_CLK_GP0>; /* clk_get resolves; .startup enables GP0 output; rate → sysclk (H3) */
+                          system-clock-id = <1>; };
+                };
+        };
+    };
+    fragment@5 {  /* snd-pio-tdm: child of &rp1 so it inherits RP1's dma-ranges (correct DMAC offsets). */
+        target = <&rp1>;
+        __overlay__ {
+            snd_pio_tdm: snd-pio-tdm {
+                compatible = "seeed,snd-pio-tdm";
+                pio = <&rp1_pio>;                          /* reg -> FIFO slave addresses */
+                /* Parsed only, never requested (pinctrl-rp1 is strict; 18-20 belong to I2S1). */
+                bclk-gpios = <&rp1_gpio 18 0>;
+                ws-gpios   = <&rp1_gpio 19 0>;
+                sdi-gpios  = <&rp1_gpio 20 0>;
+                sdo-gpios  = <&rp1_gpio 21 0>;
+                /* Own dw-axi-dmac channels; 0x100 = "heavy" -> the burst-8 channels dma2chan0/1.
+                   The handshake id fixes the SM: CH0_RX -> RX on SM0, CH1_TX -> TX on SM1. */
+                dmas = <&rp1_dma (RP1_DMA_PIO_CH0_RX | 0x100)>, <&rp1_dma (RP1_DMA_PIO_CH1_TX | 0x100)>;
+                dma-names = "rx", "tx";
+                pinctrl-names = "default";
+                pinctrl-0 = <&pio_sdo_pin>;
+                status = "okay";
+            };
+        };
+    };
+};

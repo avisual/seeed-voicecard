@@ -10,6 +10,17 @@ cd seeed-voicecard
 sudo ./install.sh
 sudo reboot
 ```
+### Raspberry Pi 5 — see [`pi5/`](pi5/)
+
+The 6-Mic HAT needs an extra driver on a Pi 5. The Pi 5's audio pins belong to RP1, whose
+DesignWare I2S blocks cannot do TDM (Raspberry Pi white paper RP-009699-WP-1 p.5: *"TDM is not
+supported on any Raspberry Pi SBCs"*; see also raspberrypi/linux#6568) — the transmitter will
+not shift at all against the AC101's pulse-width frame sync. [`pi5/`](pi5/) carries
+`snd-pio-tdm`, an out-of-tree ALSA card that runs both audio directions on RP1's PIO block
+instead, and [`pi5/install-pi5.sh`](pi5/install-pi5.sh) installs the whole stack. Read
+[`pi5/README.md`](pi5/README.md) first — in particular the pinned kernel and the codec-clock
+heartbeat, both of which are required.
+
 ## ReSpeaker Documentation
 
 Up to date documentation for reSpeaker products can be found in [Seeed Studio Wiki](https://wiki.seeedstudio.com/ReSpeaker/)!
