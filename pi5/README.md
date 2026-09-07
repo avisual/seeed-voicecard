@@ -6,6 +6,9 @@ device-tree work makes it: the Pi 5 has no TDM-capable I2S controller. This dire
 instead, so the HAT works on a Pi 5 with its six microphones, its AC101 loopback and its
 speaker output.
 
+This directory is also published standalone, with an installer that fetches this codec branch
+for you: **https://github.com/avisual/respeaker-6mic-pi5**
+
 The codec control plane (AC101 + 2× AC108 on i2c1, card `seeed8micvoicec`) is still the
 `seeed-voicecard` / `ac10x` driver in the repository root, with the Pi 5 changes from the
 previous commit. This card only carries clocks and mixer controls on a Pi 5; the audio data
