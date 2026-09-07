@@ -2,6 +2,23 @@
 
 The drivers for [ReSpeaker Mic Hat](https://www.seeedstudio.com/ReSpeaker-2-Mics-Pi-HAT-p-2874.html), [ReSpeaker 4 Mic Array](https://www.seeedstudio.com/ReSpeaker-4-Mic-Array-for-Raspberry-Pi-p-2941.html), [6-Mics Circular Array Kit](), and [4-Mics Linear Array Kit]() for Raspberry Pi.
 
+### Raspberry Pi 5
+
+The 6-Mic Circular Array HAT needs an **extra driver** on a Pi 5, and the branches here are not
+it: the Pi 5's audio pins belong to RP1, whose DesignWare I2S blocks have no TDM (Raspberry Pi
+white paper RP-009699-WP-1, p.5: *"TDM is not supported on any Raspberry Pi SBCs"*; see also
+raspberrypi/linux#6568), so the HAT's 8-slot frame cannot be captured and its transmitter never
+shifts at all. The data path has to move off I2S entirely.
+
+* **[`avisual/respeaker-6mic-pi5`](https://github.com/avisual/respeaker-6mic-pi5)** —
+  `snd-pio-tdm`, an out-of-tree ALSA card that carries both audio directions on RP1's **PIO**
+  block. Six mics, the AC101 hardware loopback and speaker playback, with DKMS and an overlay.
+* **[branch `pi5`](../../tree/pi5)** of this repository — the `ac10x` codec driver building and
+  running on kernel 6.18 / Pi 5 (the control plane: clocks and mixer controls), which the above
+  needs.
+
+Running since 2026-09-06 on a Pi 5 (2 GB) with kernel `6.18.34+rpt-rpi-2712`.
+
 ### Install seeed-voicecard
 Get the seeed voice card source code and install all linux kernel drivers
 ```bash
