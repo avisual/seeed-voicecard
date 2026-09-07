@@ -15,15 +15,26 @@
 # takes effect at boot.  NEVER `dtoverlay`/`dtoverlay -r` at runtime on
 # 6.18.34 - it Oopses and wedges configfs until a power-cycle.
 #
+# Both drivers are installed through DKMS, so /etc/kernel/postinst.d/dkms
+# rebuilds them for every kernel apt installs and a kernel upgrade cannot
+# silently leave the HAT without a driver.  (If dkms is absent the script falls
+# back to a plain build into extra/, which does NOT survive a kernel upgrade.)
+#
 # Prerequisites (Raspberry Pi OS Trixie 64-bit):
-#   sudo apt install build-essential device-tree-compiler i2c-tools alsa-utils
+#   sudo apt install build-essential device-tree-compiler i2c-tools alsa-utils dkms
 #   sudo apt install linux-headers-rpi-2712       # headers for the running kernel
 #
 # The PIO driver is built against the in-kernel rp1-pio API, which is not a
-# stable ABI.  Pin the kernel you build against:
+# stable ABI.  Pin the kernel you build against - with DKMS in place this is a
+# safety belt (you choose when to move), not the only thing holding the card up:
 #   sudo apt-mark hold linux-image-rpi-2712 linux-headers-rpi-2712 \
 #        "linux-image-$(uname -r)" "linux-headers-$(uname -r)" \
 #        "linux-headers-$(uname -r | sed 's/-rpi-.*/-common-rpi/')"
+#
+# To take a new kernel later: unhold the image AND headers together, apt
+# upgrade, watch the DKMS build in the apt output, check `dkms status` lists
+# both packages "installed" for the new kernel, reboot, verify the cards are
+# back (i2cdetect / arecord -l / bus_alive), then re-hold.
 
 set -eu
 export PATH=$PATH:/usr/sbin:/sbin
@@ -44,21 +55,63 @@ HDR_COMMON="/usr/src/linux-headers-$(echo "$KR" | sed 's/-rpi-.*/-common-rpi/')"
 BOOTDIR=/boot/firmware
 [ -d "$BOOTDIR" ] || BOOTDIR=/boot
 
-echo "== 1/6  codec modules (snd-soc-ac108, snd-soc-seeed-voicecard) =="
-make -C "$TOPDIR" clean >/dev/null 2>&1 || true
-make -C /lib/modules/"$KR"/build M="$TOPDIR" modules
-sudo install -D -m 644 "$TOPDIR/snd-soc-ac108.ko" \
-        "/lib/modules/$KR/extra/snd-soc-ac108.ko"
-sudo install -D -m 644 "$TOPDIR/snd-soc-seeed-voicecard.ko" \
-        "/lib/modules/$KR/extra/snd-soc-seeed-voicecard.ko"
+# dkms_deploy <source dir> <package name> <package version>
+# Copies the tree to /usr/src/<name>-<version> and runs add/build/install for
+# the running kernel.  Any earlier registration of the same name+version is
+# removed first, because DKMS keeps a symlink into /usr/src.
+dkms_deploy() {
+        src=$1; name=$2; ver=$3
+        dest="/usr/src/$name-$ver"
+        if dkms status -m "$name" -v "$ver" 2>/dev/null | grep -q .; then
+                sudo dkms remove -m "$name" -v "$ver" --all
+        fi
+        sudo rm -rf "$dest"
+        sudo mkdir -p "$dest"
+        # source only - no build products, no .git
+        (cd "$src" && tar cf - --exclude=.git --exclude='*.ko' --exclude='*.o' \
+                --exclude='.*.cmd' --exclude='*.mod*' --exclude=Module.symvers \
+                --exclude=modules.order .) | sudo tar xf - -C "$dest"
+        sudo dkms add     -m "$name" -v "$ver"
+        sudo dkms build   -m "$name" -v "$ver" -k "$KR"
+        sudo dkms install -m "$name" -v "$ver" -k "$KR" --force
+}
 
-echo "== 2/6  snd-pio-tdm =="
-make -C "$PI5DIR" KDIR=/lib/modules/"$KR"/build
-sudo install -D -m 644 "$PI5DIR/snd-pio-tdm.ko" \
-        "/lib/modules/$KR/extra/snd-pio-tdm.ko"
+# Codec package version comes from the repository-root dkms.conf so the two
+# never drift apart.
+CODEC_VER=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$TOPDIR/dkms.conf")
+: "${CODEC_VER:=0.3}"
+
+if command -v dkms >/dev/null 2>&1; then
+        echo "== 1/6  codec modules via DKMS (seeed-voicecard $CODEC_VER) =="
+        dkms_deploy "$TOPDIR" seeed-voicecard "$CODEC_VER"
+
+        echo "== 2/6  snd-pio-tdm via DKMS (1.0) =="
+        dkms_deploy "$PI5DIR" snd-pio-tdm 1.0
+else
+        echo "WARNING: dkms is not installed.  Falling back to a manual build:" >&2
+        echo "         the modules will NOT be rebuilt on a kernel upgrade." >&2
+        echo "         sudo apt install dkms and re-run to fix that." >&2
+
+        echo "== 1/6  codec modules (snd-soc-ac108, snd-soc-seeed-voicecard) =="
+        make -C "$TOPDIR" clean >/dev/null 2>&1 || true
+        make -C /lib/modules/"$KR"/build M="$TOPDIR" modules
+        sudo install -D -m 644 "$TOPDIR/snd-soc-ac108.ko" \
+                "/lib/modules/$KR/extra/snd-soc-ac108.ko"
+        sudo install -D -m 644 "$TOPDIR/snd-soc-seeed-voicecard.ko" \
+                "/lib/modules/$KR/extra/snd-soc-seeed-voicecard.ko"
+
+        echo "== 2/6  snd-pio-tdm =="
+        make -C "$PI5DIR" KDIR=/lib/modules/"$KR"/build
+        sudo install -D -m 644 "$PI5DIR/snd-pio-tdm.ko" \
+                "/lib/modules/$KR/extra/snd-pio-tdm.ko"
+fi
+
 sudo depmod -a
+if command -v dkms >/dev/null 2>&1; then
+        dkms status
+fi
 for m in snd-soc-ac108 snd-soc-seeed-voicecard snd-pio-tdm; do
-        echo "  $m -> $(modinfo -F filename $m)"
+        echo "  $m -> $(modinfo -n $m)"
 done
 
 echo "== 3/6  module load order (/etc/modules-load.d) =="
@@ -129,6 +182,7 @@ After the reboot:
                                          # (0x1a missing = reseat the FPC ribbon)
     arecord -l | grep -E 'seeed8micvoicec|seeed8micpio'
     systemctl status seeed-codec-heartbeat
+    dkms status                          # both packages "installed" for this kernel
 
 Then set the mixer once and save it (values for the 6-Mic HAT):
     amixer -c seeed8micvoicec cset name='ADC1 PGA gain' 12   # ... ADC2..ADC6 too

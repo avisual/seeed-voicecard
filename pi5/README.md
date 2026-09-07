@@ -102,16 +102,42 @@ constraints and the device tree — is in `DESIGN.md`.
 ## Install
 
 ```sh
+sudo apt install dkms # once
 ./install-pi5.sh      # from this directory, on the Pi
 sudo systemctl reboot # the overlay only applies at boot
 ```
 
-It builds and installs the codec modules from the repository root and `snd-pio-tdm` from here
-into `/lib/modules/$(uname -r)/extra` (`depmod -a`), writes the `modules-load.d` entries, builds
-and validates the overlay with `cpp | dtc` (plus `fdtoverlay` against the board's base dtb),
-adds the `config.txt` lines, and installs `seeed-codec-heartbeat.service`. It prints the mixer
-settings to apply once and `alsactl store`. Prerequisites and the `apt-mark hold` line are in
-the script's header comment.
+It installs the codec modules from the repository root and `snd-pio-tdm` from here **as DKMS
+packages** (`seeed-voicecard` and `snd-pio-tdm` 1.0 — sources copied to `/usr/src/<name>-<ver>`,
+then `dkms add`/`build`/`install`), writes the `modules-load.d` entries, builds and validates the
+overlay with `cpp | dtc` (plus `fdtoverlay` against the board's base dtb), adds the `config.txt`
+lines, and installs `seeed-codec-heartbeat.service`. It prints the mixer settings to apply once
+and `alsactl store`. Prerequisites and the `apt-mark hold` line are in the script's header
+comment. Without `dkms` present it falls back to a plain build into `extra/` and says so.
+
+### Why DKMS
+
+`snd-pio-tdm` is built against the in-kernel rp1-pio API, which is not a stable ABI, so the
+kernel is normally pinned with `apt-mark hold`. Both `dkms.conf` files set `AUTOINSTALL="yes"`,
+which means `/etc/kernel/postinst.d/dkms` rebuilds and installs both drivers for any kernel apt
+puts on the box — the hold becomes a safety belt (you choose when to move) instead of the only
+thing keeping the card alive. DKMS installs to `/lib/modules/<kr>/updates/dkms/*.ko.xz` on
+Debian (it overrides `DEST_MODULE_LOCATION`), which `depmod` ranks above `extra/`; it also
+archives any hand-built `extra/` copy it displaces and restores it on `dkms uninstall`.
+
+Checks that do not require reloading anything:
+
+```sh
+dkms status                      # both packages "installed" for the running kernel
+modinfo -n snd-pio-tdm           # resolves to updates/dkms, not a stale extra/ copy
+modinfo -F srcversion snd-pio-tdm
+cat /sys/module/snd_pio_tdm/srcversion   # must equal the line above = same source
+```
+
+Taking a new kernel: unhold the image **and** headers together, `apt upgrade`, watch the DKMS
+build in the apt output, confirm `dkms status` lists both packages `installed` for the new
+kernel, reboot, verify the cards (`i2cdetect -y 1`, `arecord -l`, `bus_alive`), then re-hold. If
+a DKMS build fails, re-hold and do not reboot — the new kernel would come up without the HAT.
 
 ## Runtime contract
 
@@ -168,9 +194,10 @@ the script's header comment.
 | File | Purpose |
 |------|---------|
 | `snd-pio-tdm.c` | the driver (platform driver on `compatible = "seeed,snd-pio-tdm"`) |
-| `Makefile` | `make` builds against `/lib/modules/$(uname -r)/build`; `make install` → `extra/` + `depmod` |
+| `Makefile` | `make` builds against `/lib/modules/$(uname -r)/build`; `make install` → `extra/` + `depmod` (dev loop; the shipping path is DKMS) |
+| `dkms.conf` | DKMS packaging for `snd-pio-tdm` 1.0, `AUTOINSTALL=yes` — rebuilt for every kernel apt installs |
 | `seeed-8mic-pi5-overlay.dts` | the full HAT overlay: seeed control-plane fragments + I2S1 trimmed to GPIO18-20 + `pio_sdo_pin` (GPIO21) + the `snd-pio-tdm` node under `&rp1` |
-| `install-pi5.sh` | the whole install: both drivers, overlay, `modules-load.d`, `config.txt`, heartbeat unit |
+| `install-pi5.sh` | the whole install: both drivers via DKMS, overlay, `modules-load.d`, `config.txt`, heartbeat unit |
 | `DESIGN.md` | implementer's spec — PIO programs, DMA, locking, ALSA constraints, device tree |
 | `test/analyse_pio.py` | numpy analyser for raw 8-ch S32 captures (RMS/slot, low-byte OR, tone peak + SNR) |
 
